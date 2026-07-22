@@ -1,0 +1,22 @@
+[project]
+name = "claude-remote-img-paste"
+version = "0.1.0"
+description = "Paste images from your Mac clipboard into Claude Code sessions over SSH (Ctrl+V, inline [Image #N])"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Junyong Lee" }]
+keywords = ["claude", "claude-code", "clipboard", "ssh", "image", "paste"]
+
+[project.urls]
+Homepage = "https://github.com/codeslake/claude-remote-img-paste"
+
+[project.scripts]
+crimp = "crimp:main"
+
+[build-system]
+requires = ["uv_build>=0.7.19,<1"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "crimp"
