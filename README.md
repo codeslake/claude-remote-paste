@@ -48,11 +48,15 @@ when passwordless sudo is available, and tells you what to run otherwise).
 
 ```
 crimp setup [host...]   install crimp + deps + rc wiring on remotes
+crimp ensure            start the mirror daemon if not running (rc-safe)
 crimp status            daemon state, hosts, recent log
 crimp doctor [host...]  diagnose Mac and remotes
 crimp pause | resume    suspend / resume mirroring
 crimp push <host>       one-shot manual push (no daemon)
+crimp clear <host>      clear a remote clipboard
 crimp stop              stop the mirror daemon
+crimp init [zsh|bash]   emit the shell rc code (used by the rc line)
+crimp version           print version
 ```
 
 ## Config
@@ -67,13 +71,23 @@ Environment variables, all optional:
 | `CRIMP_USE_HOST_X` | `0` | `1` = reuse an existing X server instead of Xvfb |
 | `CRIMP_POLL` | `1` | clipboard poll interval (s) |
 | `CRIMP_BACKOFF` | `60` | per-host retry backoff (s) |
+| `CRIMP_DIR` | `~/.crimp` | state directory (log, pidfiles, xauth) |
 
 ## Privacy
 
 Every image you copy is mirrored to all `CRIMP_HOSTS` while the daemon runs
 (images only — text never leaves your Mac). The remote clipboard lives in a
-dedicated Xvfb locked with xauth, unreadable by other users on shared hosts.
-Prefer manual control? Skip the daemon and use `crimp push` / `crimp pause`.
+dedicated Xvfb locked with xauth, unreadable by other users on shared hosts;
+crimp's state files are 0600 in a 0700 directory, and the transferred image
+is deleted from disk once the clipboard owns it. If `xauth` is missing on a
+host, the Xvfb display is as open as any default X server — `crimp doctor`
+warns about this. Prefer manual control? Skip the daemon and use
+`crimp push` / `crimp pause`.
+
+Note: `crimp setup` appends one line to the remote `~/.zshrc` / `~/.bashrc`
+(idempotent — it skips files that already have it). If your rc files are
+symlinks into a dotfiles repo, that append lands in the repo; wire the line
+through your dotfiles instead and setup will leave it alone.
 
 ## License
 
