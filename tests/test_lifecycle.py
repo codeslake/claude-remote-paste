@@ -183,3 +183,52 @@ class TestPermissions(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCrossPlatform(Base):
+    """Capability-based roles: any OS can send (with a grabber) and receive."""
+
+    def test_grabber_missing_linux_headless(self):
+        crimp.IS_MAC = False
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("WAYLAND_DISPLAY", None)
+            os.environ.pop("DISPLAY", None)
+            self.assertIsNotNone(crimp._grabber_missing())
+
+    def test_grabber_ok_linux_x11(self):
+        crimp.IS_MAC = False
+        with mock.patch.dict(os.environ, {"DISPLAY": ":0"}), \
+             mock.patch.object(crimp.shutil, "which",
+                               side_effect=lambda b: f"/usr/bin/{b}"):
+            self.assertIsNone(crimp._grabber_missing())
+
+    def test_grabber_prefers_wayland(self):
+        crimp.IS_MAC = False
+        calls = []
+        with mock.patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}), \
+             mock.patch.object(crimp.shutil, "which",
+                               side_effect=lambda b: f"/usr/bin/{b}"), \
+             mock.patch.object(crimp, "run",
+                               side_effect=lambda cmd, **kw: (calls.append(cmd[0]),
+                                   subprocess.CompletedProcess(cmd, 0, b"png", b""))[1]):
+            self.assertEqual(crimp._grab_clipboard(), b"png")
+        self.assertEqual(calls, ["wl-paste"])
+
+    def test_receive_dispatches_mac(self):
+        crimp.IS_MAC = True
+        fake_stdin = mock.Mock()
+        fake_stdin.buffer.read.return_value = b"pngbytes"
+        with mock.patch.object(crimp, "_receive_mac") as rm, \
+             mock.patch.object(crimp.sys, "stdin", fake_stdin):
+            crimp.cmd_receive([])
+        rm.assert_called_once_with(b"pngbytes")
+
+    def test_ensure_skips_without_grabber(self):
+        """No grabber on this box -> ensure must not spawn a doomed daemon."""
+        crimp.IS_MAC = False
+        calls = []
+        with mock.patch.object(crimp, "_grabber_missing", return_value="x"), \
+             mock.patch.object(crimp.subprocess, "Popen",
+                               side_effect=lambda *a, **k: calls.append(a)):
+            crimp.cmd_ensure([])
+        self.assertEqual(calls, [])

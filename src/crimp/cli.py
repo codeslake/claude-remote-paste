@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 def _env_num(name, default, cast):
@@ -210,7 +210,8 @@ def setup_display_env():
 
 
 def cmd_shellenv(_args):
-    """Emit `export ...` lines for eval in a shell rc. No-op on Mac/no display."""
+    """Emit `export ...` lines for eval in a shell rc. No-op on Mac (native
+    clipboard needs no DISPLAY) and on hosts with no display available."""
     if IS_MAC:
         return
     disp = resolve_display()
@@ -231,10 +232,33 @@ def _xclip_targets():
     return p.stdout.decode(errors="replace").split()
 
 
+def _receive_mac(data):
+    """PNG bytes -> the Mac's native clipboard. osascript ships with macOS, so
+    a Mac receiver needs zero extra installs; Claude Code on the Mac reads the
+    NSPasteboard directly (no Xvfb, no DISPLAY)."""
+    _ensure_dir(CRIMP_DIR)
+    f = CRIMP_DIR / "inject.png"
+    _write_private(f, data)
+    script = ('set the clipboard to (read (POSIX file "%s") as '
+              '\u00abclass PNGf\u00bb)' % str(f))
+    r = run(["osascript", "-e", script],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    f.unlink(missing_ok=True)
+    if r.returncode != 0:
+        die(f"clipboard set failed: {_clean(r.stderr.decode(errors='replace')).strip()}")
+    info = run(["osascript", "-e", "clipboard info"], stdout=subprocess.PIPE)
+    if b"PNGf" not in (info.stdout or b""):
+        die("clipboard verify failed")
+
+
 def cmd_receive(_args):
-    """stdin: PNG bytes -> local X clipboard."""
+    """stdin: PNG bytes -> this machine's clipboard."""
     if IS_MAC:
-        die("receive runs on the Linux receiver")
+        data = sys.stdin.buffer.read()
+        if not data:
+            die("empty image on stdin")
+        _receive_mac(data)
+        return
     if not shutil.which("xclip"):
         die("xclip not installed (apt install xclip)")
     if not setup_display_env():
@@ -264,9 +288,11 @@ def cmd_receive(_args):
 
 
 def cmd_clear_local(_args):
-    """Empty the local X clipboard (stale-image guard)."""
+    """Empty this machine's clipboard (stale-image guard)."""
     if IS_MAC:
-        die("clear-local runs on the Linux receiver")
+        run(["osascript", "-e", 'set the clipboard to ""'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
     if not shutil.which("xclip") or not setup_display_env():
         return
     subprocess.Popen(["xclip", "-selection", "clipboard", "-i", "/dev/null"],
@@ -275,9 +301,17 @@ def cmd_clear_local(_args):
 
 
 def cmd_paste(_args):
-    """X clipboard image -> file, print its path (shell-widget engine)."""
+    """Clipboard image -> file, print its path (shell-widget engine)."""
     if IS_MAC:
-        die("paste runs on the Linux receiver")
+        data = _grab_clipboard()
+        if not data:
+            sys.exit(1)
+        d = Path.home() / ".cache/crimp"
+        _ensure_dir(d)
+        f = d / f"paste-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.png"
+        _write_private(f, data)
+        print(f, end="")
+        return
     if not shutil.which("xclip") or not setup_display_env():
         sys.exit(1)
     if "image/png" not in _xclip_targets():
@@ -311,17 +345,33 @@ def _remote(host, subcmd, stdin_bytes=None, timeout=30):
                stdin_bytes=stdin_bytes, timeout=timeout)
 
 
+def _grabber_missing():
+    """Why THIS machine cannot read its own clipboard (sender role), or None.
+    Mac: pngpaste. Linux desktop: wl-paste (Wayland) or xclip (X11) plus a
+    live session display."""
+    if IS_MAC:
+        return None if shutil.which("pngpaste") else "pngpaste (brew install pngpaste)"
+    if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-paste"):
+        return None
+    if os.environ.get("DISPLAY") and shutil.which("xclip"):
+        return None
+    return "a desktop session with wl-clipboard (Wayland) or xclip (X11)"
+
+
 def _grab_clipboard():
-    """Mac clipboard image as PNG bytes, or None."""
-    if not shutil.which("pngpaste"):
-        die("pngpaste missing (brew install pngpaste)")
-    p = run(["pngpaste", "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    """This machine's clipboard image as PNG bytes, or None."""
+    if IS_MAC:
+        p = run(["pngpaste", "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    elif os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-paste"):
+        p = run(["wl-paste", "-t", "image/png"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    else:
+        p = run(["xclip", "-selection", "clipboard", "-t", "image/png", "-o"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     return p.stdout if p.returncode == 0 and p.stdout else None
 
 
 def cmd_push(args):
-    if not IS_MAC:
-        die("push runs on the Mac sender")
     if not args:
         die("usage: crimp push <host>")
     data = _grab_clipboard()
@@ -333,20 +383,17 @@ def cmd_push(args):
 
 
 def cmd_clear(args):
-    if not IS_MAC:
-        die("clear runs on the Mac sender")
     if not args:
         die("usage: crimp clear <host>")
     _remote(args[0], "clear-local")
 
 
 def cmd_daemon_run(_args):
-    if not IS_MAC:
-        die("the mirror daemon runs on the Mac sender")
     if not HOSTS:
         die("CRIMP_HOSTS is empty")
-    if not shutil.which("pngpaste"):
-        die("pngpaste missing (brew install pngpaste)")
+    missing = _grabber_missing()
+    if missing:
+        die(f"cannot read this machine's clipboard: need {missing}")
     _ensure_dir(CRIMP_DIR)
     _write_pidfile(os.getpid())
     log(f"daemon started (hosts: {' '.join(HOSTS)})")
@@ -391,9 +438,9 @@ def _daemon_pid():
 
 
 def cmd_ensure(_args):
-    if not IS_MAC or not HOSTS:
+    if not HOSTS:
         return
-    if not shutil.which("pngpaste"):
+    if _grabber_missing():
         return  # daemon-run would die instantly; don't spawn-loop on every shell
     _ensure_dir(CRIMP_DIR)
     # atomic mkdir lock: N shells at terminal-session restore would race
@@ -497,11 +544,16 @@ fi
 
 def cmd_init(args):
     shell = args[0] if args else os.path.basename(os.environ.get("SHELL", "zsh"))
+    # Roles are per-machine capabilities, not OS identities: any box with
+    # CRIMP_HOSTS set is a sender (daemon), and any box can be a receiver.
+    # A Linux desktop mirroring to servers is both at once.
+    print("command -v crimp >/dev/null 2>&1 && crimp ensure 2>/dev/null")
     if IS_MAC:
-        # sender: keep the mirror daemon alive from any interactive shell
-        print("command -v crimp >/dev/null 2>&1 && crimp ensure 2>/dev/null")
+        # Mac receiver path is the native NSPasteboard — no DISPLAY, and the
+        # widget adds nothing over Cmd+V; nothing else to wire.
         return
-    # receiver: resolve DISPLAY at shell start (claude inherits it), bind widget
+    # Linux receiver: resolve DISPLAY at shell start (claude inherits it),
+    # bind the plain-shell paste widget
     print('command -v crimp >/dev/null 2>&1 && eval "$(crimp shellenv 2>/dev/null)"')
     # KEY lands inside quoted rc code — strip quote chars so a weird CRIMP_KEY
     # cannot produce broken (or injected) shell.
@@ -545,6 +597,7 @@ command -v crimp >/dev/null 2>&1 && echo CRIMP_OK || echo CRIMP_FAIL
 """
 
 REMOTE_DEPS = r"""
+if [ "$(uname -s)" = Darwin ]; then echo DEPS_OK; exit 0; fi  # native clipboard, no X deps
 need=""
 command -v xclip >/dev/null 2>&1 || need="xclip"
 command -v Xvfb  >/dev/null 2>&1 || need="$need xvfb"
@@ -607,8 +660,6 @@ def _project_tar():
 
 
 def cmd_setup(args):
-    if not IS_MAC:
-        die("setup runs on the Mac sender")
     hosts = args or HOSTS
     if not hosts:
         die("no hosts (crimp setup <host...> or set CRIMP_HOSTS)")
@@ -656,7 +707,8 @@ def cmd_setup(args):
 
 def cmd_doctor(args):
     if IS_MAC:
-        _ok("pngpaste") if shutil.which("pngpaste") else _fail("pngpaste missing (brew install pngpaste)")
+        m = _grabber_missing()
+        _ok("clipboard read (pngpaste)") if not m else _fail(f"sender needs {m}")
         _ok(f"CRIMP_HOSTS={' '.join(HOSTS)}") if HOSTS else _warn("CRIMP_HOSTS unset (mirror daemon idle)")
         cmd_status([])
         for h in (args or HOSTS):
@@ -671,6 +723,8 @@ def cmd_doctor(args):
             else:
                 _fail(f"{h}: crimp not installed on remote (run: crimp setup {h})")
     else:
+        m = _grabber_missing()
+        _ok("clipboard read (sender-capable)") if not m else _warn(f"sender role needs {m}")
         _ok("xclip") if shutil.which("xclip") else _fail("xclip missing (apt install xclip)")
         if shutil.which("Xvfb"):
             _ok("Xvfb")
@@ -682,6 +736,17 @@ def cmd_doctor(args):
             _ok(f"display: {disp[0]}{' (xauth-locked)' if disp[1] else ''}")
         else:
             _fail("no display available")
+        for h in (args or HOSTS):
+            if ssh(h, ["true"]).returncode != 0:
+                _fail(f"{h}: ssh unreachable")
+                continue
+            _ok(f"{h}: ssh")
+            p = _remote(h, "doctor")
+            if p.returncode == 0:
+                print("\n".join(f"      [{h}] {_clean(ln)}"
+                                for ln in p.stdout.decode(errors="replace").splitlines()))
+            else:
+                _fail(f"{h}: crimp not installed on remote (run: crimp setup {h})")
 
 
 # =============================================================================
@@ -692,17 +757,17 @@ USAGE = f"""\
 crimp {__version__} — Claude Remote IMage Paste
 https://github.com/codeslake/claude-remote-img-paste
 
-Mac (sender):
+Sender (the machine you copy on — macOS or a Linux desktop):
   crimp setup [host...]   one-time: install crimp+deps+rc on remotes (default: CRIMP_HOSTS)
   crimp ensure            start the mirror daemon if not running (rc-safe)
   crimp stop|status       stop / inspect the daemon
   crimp pause|resume      suspend / resume mirroring
   crimp push <host>       one-shot: clipboard image -> <host> clipboard
   crimp clear <host>      clear <host>'s clipboard
-Linux (receiver, used over ssh / by the shell widget):
-  crimp receive           stdin PNG -> X clipboard (starts Xvfb if needed)
-  crimp paste             X clipboard image -> file, print path
-  crimp shellenv          emit DISPLAY/XAUTHORITY exports for eval
+Receiver (any macOS or Linux box you ssh into; used over ssh / by the widget):
+  crimp receive           stdin PNG -> clipboard (Linux: starts Xvfb if needed)
+  crimp paste             clipboard image -> file, print path
+  crimp shellenv          emit DISPLAY/XAUTHORITY exports for eval (Linux)
 Both:
   crimp init [zsh|bash]   emit shell rc code:  eval "$(crimp init zsh)"
   crimp doctor [host...]  diagnose this machine (and remotes, on Mac)

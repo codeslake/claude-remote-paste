@@ -1,8 +1,11 @@
 # claude-remote-img-paste (crimp)
 
-Paste images from your Mac clipboard into a Claude Code session running over SSH.
+Paste images from your local clipboard into a Claude Code session running over SSH.
 Copy an image, press `Ctrl+V` in the remote session, get a real inline `[Image #N]`
 attachment — exactly like a local paste.
+
+Works in every direction: macOS or a Linux desktop as the sender, macOS or any
+headless Linux box as the receiver.
 
 ## Why
 
@@ -10,13 +13,14 @@ Claude Code on Linux reads the clipboard with `xclip` on `Ctrl+V`, which needs a
 X display — a headless SSH box has neither, so image paste silently fails
 ([#42712](https://github.com/anthropics/claude-code/issues/42712)).
 
-`crimp` fixes this from the Mac side: a small daemon mirrors your clipboard images
-onto each remote's X clipboard (a tiny dedicated Xvfb, xauth-locked). By the time
-you press `Ctrl+V`, the image is already there — no key interception, works from
-any terminal, tmux, mosh, or autossh.
+`crimp` fixes this from the sender side: a small daemon mirrors your clipboard
+images onto each remote's clipboard (Linux receivers get a tiny dedicated Xvfb,
+xauth-locked; macOS receivers use the native clipboard). By the time you press
+`Ctrl+V`, the image is already there — no key interception, works from any
+terminal, tmux, mosh, or autossh.
 
 ```
-Mac clipboard ──(mirror daemon, ~2s)──▶ remote Xvfb clipboard ──(Ctrl+V)──▶ [Image #1]
+local clipboard ──(mirror daemon, ~2s)──▶ remote clipboard ──(Ctrl+V)──▶ [Image #1]
 ```
 
 ## Install
@@ -31,7 +35,7 @@ One-time setup (installs crimp + deps on every remote over ssh, wires shell rc):
 crimp setup <host> [host...]
 ```
 
-Add to your Mac `~/.zshrc` (or `~/.bashrc`):
+Add to the sender's `~/.zshrc` (or `~/.bashrc`):
 
 ```sh
 export CRIMP_HOSTS="<host> [host...]"
@@ -45,8 +49,11 @@ crimp never intercepts keys inside Claude Code — it only keeps the remote
 clipboard in sync, and Claude's own paste handler reads it. If you've rebound
 Claude's paste key, crimp works with whatever key that is, no configuration.
 
-Remote requirements: `python3`, `xclip`, `xvfb` (`crimp setup` apt-installs them
-when passwordless sudo is available, and tells you what to run otherwise).
+Sender requirements: macOS needs `pngpaste` (`brew install pngpaste`); a Linux
+desktop needs `wl-clipboard` (Wayland) or `xclip` (X11) and a running session.
+Linux receivers need `python3`, `xclip`, `xvfb` (`crimp setup` apt-installs them
+when passwordless sudo is available, and tells you what to run otherwise); macOS
+receivers need nothing beyond crimp itself.
 
 ## Bonus: paste in a plain shell (no Claude)
 
@@ -90,7 +97,7 @@ Environment variables, all optional:
 ## Privacy
 
 Every image you copy is mirrored to all `CRIMP_HOSTS` while the daemon runs
-(images only — text never leaves your Mac). The remote clipboard lives in a
+(images only — text never leaves the sender). The remote clipboard lives in a
 dedicated Xvfb locked with xauth, unreadable by other users on shared hosts;
 crimp's state files are 0600 in a 0700 directory, and the transferred image
 is deleted from disk once the clipboard owns it. If `xauth` is missing on a
