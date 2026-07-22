@@ -39,10 +39,24 @@ eval "$(crimp init)"
 ```
 
 That's it. Copy an image, press `Ctrl+V` in a Claude Code session on any of those
-hosts. In a plain remote shell, `Ctrl+V` inserts the image as a file path instead.
+hosts.
+
+crimp never intercepts keys inside Claude Code — it only keeps the remote
+clipboard in sync, and Claude's own paste handler reads it. If you've rebound
+Claude's paste key, crimp works with whatever key that is, no configuration.
 
 Remote requirements: `python3`, `xclip`, `xvfb` (`crimp setup` apt-installs them
 when passwordless sudo is available, and tells you what to run otherwise).
+
+## Bonus: paste in a plain shell (no Claude)
+
+A shell has no notion of pasting an image, so crimp also ships a small zsh/bash
+widget on the remote: at a plain prompt, `Ctrl+V` saves the clipboard image to a
+file and inserts its path. This is the only key crimp owns anywhere — it lives
+in the *shell*, not in Claude Code. Since `Ctrl+V` normally means quoted-insert
+in a shell (the widget falls through to it when there's no image), you can move
+the widget to another key with `CRIMP_KEY` (zsh caret syntax, e.g. `^G`), or
+ignore this feature entirely — Claude paste is unaffected either way.
 
 ## Commands
 
@@ -66,12 +80,12 @@ Environment variables, all optional:
 | var | default | |
 |---|---|---|
 | `CRIMP_HOSTS` | — | ssh destinations to mirror to (space-separated) |
-| `CRIMP_KEY` | `^V` | shell-widget key on remotes |
 | `CRIMP_DISPLAY` | `:99` | dedicated Xvfb display |
 | `CRIMP_USE_HOST_X` | `0` | `1` = reuse an existing X server instead of Xvfb |
 | `CRIMP_POLL` | `1` | clipboard poll interval (s) |
 | `CRIMP_BACKOFF` | `60` | per-host retry backoff (s) |
 | `CRIMP_DIR` | `~/.crimp` | state directory (log, pidfiles, xauth) |
+| `CRIMP_KEY` | `^V` | plain-shell widget key only (see Bonus above) — not related to Claude Code's paste key |
 
 ## Privacy
 
